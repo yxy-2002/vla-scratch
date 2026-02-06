@@ -21,8 +21,8 @@ Pretrained checkpoints: [wandb runs](https://wandb.ai/elijahgalahad/vla-scratch/
 
 Set up simulation virtual environment (`examples/bbox_cotrain/.venv`):
 ```bash
-git clone git@github.com:EGalahad/BlindVLA.git ../BlindVLA
-export BLINDVLA_ROOT=/mnt/project_rlinf/yangxinye/BlindVLA
+git clone https://github.com/EGalahad/BlindVLA.git ../BlindVLA
+export BLINDVLA_ROOT=$(pwd)/../BlindVLA
 
 uv sync --project examples/bbox_cotrain  # installs pyzmq/msgpack/gym etc.
 source examples/bbox_cotrain/.venv/bin/activate
