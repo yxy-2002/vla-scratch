@@ -567,6 +567,7 @@ def _write_bboxes_jsonl(
 ) -> Path:
     # Build a fast lookup: (task_dir, seed) -> (episode_index, image_path)
     key_to_episode: Dict[Tuple[str, int], EpisodeItem] = {(e.task_dir, e.seed): e for e in episodes}
+    index_map = {e.episode_index: i for i, e in enumerate(episodes)}
     out_path = out_root / "meta" / "bboxes.jsonl"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -646,12 +647,16 @@ def _write_bboxes_jsonl(
                 if not out_bbox:
                     continue
 
+                index = index_map.get(ep.episode_index, 0)
                 out_f.write(
                     json.dumps(
                         {
                             "episode_index": int(ep.episode_index),
                             "frame_index": 0,
+                            "index": int(index),
+                            "timestamp": 0.0,
                             "bbox": out_bbox,
+                            "bbox_idx": int(index),
                         },
                         ensure_ascii=False,
                     )

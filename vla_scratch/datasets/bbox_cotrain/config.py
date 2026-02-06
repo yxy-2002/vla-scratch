@@ -23,10 +23,12 @@ class CoTrainConfig(DataConfig):
 
 
 train_cotrain_config = CoTrainConfig(
-    repo_id="horipse01/lerobot_merged_restricted"
+    root_path="/mnt/project_rlinf/yangxinye/vla-scratch/data/",
+    repo_id="lerobot_merged_restricted"
 )
 test_cotrain_config = CoTrainConfig(
-    repo_id="horipse01/lerobot_merged_restricted_val"
+    root_path="/mnt/project_rlinf/yangxinye/vla-scratch/data/",
+    repo_id="lerobot_merged_restricted_val"
 )
 
 cs = ConfigStore.instance()

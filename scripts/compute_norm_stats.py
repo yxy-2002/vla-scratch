@@ -119,12 +119,6 @@ def compute_and_save_norm_stats(
     action_tensor = stacked.action_chunk.actions
 
     def _compute_norm_stats_for_tensor(tensor: torch.Tensor) -> FieldNormStats:
-        if tensor.numel() == 0:
-            raise ValueError(
-                "Cannot compute norm stats on an empty tensor. "
-                "This can happen if you set policy.state_history=0 (no state) "
-                "but still try to compute state normalization statistics."
-            )
         mean = tensor.mean(dim=0)
         std = tensor.std(dim=0, unbiased=False)
         q01 = torch.quantile(tensor, 0.01, dim=0)
@@ -133,16 +127,10 @@ def compute_and_save_norm_stats(
             mean_=mean, std_=std, q01=q01, q99=q99, batch_size=tensor.shape[1:]
         )
 
-    stats: NormStats = {}
-    # If state_history == 0, many datasets represent "no state" as an empty tensor.
-    # Skip state stats in that case (training can set policy.use_state=False).
-    if state_tensor is not None and state_tensor.numel() > 0:
-        stats[PROCESSED_STATE_KEY] = _compute_norm_stats_for_tensor(state_tensor)
-    else:
-        print(
-            f"Skipping state norm stats (state tensor is empty; state_history={data_config.state_history})."
-        )
-    stats[PROCESSED_ACTION_KEY] = _compute_norm_stats_for_tensor(action_tensor)
+    stats = {
+        PROCESSED_STATE_KEY: _compute_norm_stats_for_tensor(state_tensor),
+        PROCESSED_ACTION_KEY: _compute_norm_stats_for_tensor(action_tensor),
+    }
 
     stats_path = save_norm_stats(output_dir, data_config, policy_config, stats)
     print(f"Saved normalization stats to: {stats_path}")
@@ -158,24 +146,9 @@ def main(cfg: DictConfig) -> None:
     data_cfg: DataConfig = run_cfg.data
     policy_cfg: PolicyConfig = run_cfg.policy
 
-    # Keep temporal params aligned.
-    #
-    # Callers often override `data.action_horizon`/`data.state_history` on the CLI
-    # and expect those values to drive the stats shape + filename. Previously we
-    # overwrote the data values with policy defaults, which was surprising.
-    #
-    # Rule:
-    # - If data.* is set, it wins and we align policy.* to it.
-    # - Otherwise, fall back to policy.* and copy into data.*.
-    if data_cfg.action_horizon is not None:
-        policy_cfg.action_horizon = data_cfg.action_horizon
-    else:
-        data_cfg.action_horizon = policy_cfg.action_horizon
-
-    if data_cfg.state_history is not None:
-        policy_cfg.state_history = data_cfg.state_history
-    else:
-        data_cfg.state_history = policy_cfg.state_history
+    # Keep temporal params aligned if one is overridden
+    data_cfg.action_horizon = policy_cfg.action_horizon
+    data_cfg.state_history = policy_cfg.state_history
 
     print(
         f"Computing norm stats for data={data_cfg._target_} policy={policy_cfg._target_} "

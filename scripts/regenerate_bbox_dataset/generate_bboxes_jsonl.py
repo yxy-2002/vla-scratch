@@ -396,9 +396,37 @@ def _clip01(x: float) -> float:
     return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
 
 
+def _build_frame_lookup(
+    lerobot_root: Path,
+) -> Dict[Tuple[int, int], Tuple[int, float]]:
+    """
+    Build a lookup: (episode_index, frame_index) -> (index, timestamp).
+    Uses exact timestamp values from LeRobot parquet data.
+    """
+    data_dir = lerobot_root / "data"
+    parquet_files = _iter_parquet_files(data_dir)
+    if not parquet_files:
+        raise FileNotFoundError(f"No parquet files found under {data_dir}")
+    dataset = ds.dataset([str(p) for p in parquet_files], format="parquet")
+
+    table = dataset.to_table(
+        columns=["episode_index", "frame_index", "index", "timestamp"]
+    )
+    ep_idx = np.asarray(table["episode_index"].to_numpy(zero_copy_only=False))
+    frame_idx = np.asarray(table["frame_index"].to_numpy(zero_copy_only=False))
+    index_arr = np.asarray(table["index"].to_numpy(zero_copy_only=False))
+    ts_arr = np.asarray(table["timestamp"].to_numpy(zero_copy_only=False))
+
+    lookup: Dict[Tuple[int, int], Tuple[int, float]] = {}
+    for ei, fi, idx, ts in zip(ep_idx, frame_idx, index_arr, ts_arr):
+        lookup[(int(ei), int(fi))] = (int(idx), float(ts))
+    return lookup
+
+
 def _convert_ecot_bbox_json_to_records(
     demo: EcotDemo,
     episode_index: int,
+    frame_lookup: Mapping[Tuple[int, int], Tuple[int, float]],
 ) -> List[Dict[str, Any]]:
     """
     Convert ECOT bounding_box.json into LeRobot bbox jsonl records.
@@ -445,11 +473,22 @@ def _convert_ecot_bbox_json_to_records(
 
         if not out_bbox:
             continue
+        key = (int(episode_index), int(frame_idx))
+        idx_ts = frame_lookup.get(key)
+        if idx_ts is None:
+            raise RuntimeError(
+                f"Missing (index, timestamp) for episode={episode_index}, frame={frame_idx}"
+            )
+        index, timestamp = idx_ts
+
         records.append(
             {
                 "episode_index": int(episode_index),
                 "frame_index": int(frame_idx),
+                "index": int(index),
+                "timestamp": float(timestamp),
                 "bbox": out_bbox,
+                "bbox_idx": int(index),
             }
         )
     return records
@@ -538,12 +577,17 @@ def main() -> int:
         demo_to_episode.update(mapping)
 
     # Convert bbox json to jsonl records
+    frame_lookup = _build_frame_lookup(lerobot_root)
     records: List[Dict[str, Any]] = []
     for d in demos:
         ep = demo_to_episode.get(d.demo_path)
         if ep is None:
             raise RuntimeError(f"Internal error: no matched episode for demo {d.demo_path}")
-        records.extend(_convert_ecot_bbox_json_to_records(d, ep.episode_index))
+        records.extend(
+            _convert_ecot_bbox_json_to_records(
+                d, ep.episode_index, frame_lookup
+            )
+        )
 
     # Sort for stable output
     records.sort(key=lambda r: (int(r["episode_index"]), int(r["frame_index"])))
@@ -567,4 +611,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

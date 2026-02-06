@@ -14,6 +14,14 @@ SUCCESS_RE = re.compile(
     r"(?:^|[_\-.])success(?:=|[_\-.])(?P<val>true|false)(?:[_\-.]|$)",
     re.IGNORECASE,
 )
+# Supports names like:
+# - *_success_[ True].mp4
+# - *_success_[False].mp4
+# - *_success_[true,false].mp4 (takes first value)
+SUCCESS_BRACKET_RE = re.compile(
+    r"(?:^|[_\-.])success(?:=|[_\-.])\[\s*(?P<val>true|false)",
+    re.IGNORECASE,
+)
 EPISODE_RE = re.compile(r"(?:^|[_\-.])episode_(?P<id>\d+)(?:[_\-.]|$)", re.IGNORECASE)
 
 
@@ -33,6 +41,8 @@ def _iter_files(input_dir: Path, recursive: bool) -> Iterable[Path]:
 
 def _extract_success_from_name(filename: str) -> bool | None:
     match = SUCCESS_RE.search(filename)
+    if not match:
+        match = SUCCESS_BRACKET_RE.search(filename)
     if not match:
         return None
     return match.group("val").lower() == "true"
@@ -156,6 +166,7 @@ def main(argv: list[str]) -> int:
     print(f"samples_success: {success}")
     print(f"samples_failure: {failure}")
     print(f"success_rate: {rate:.4f} ({rate*100:.2f}%)")
+    print(f"acc: {rate:.4f} ({rate*100:.2f}%)")
     print(f"matched_files: {len(samples)} | ignored_files: {len(ignored)}")
 
     if args.print_examples and args.print_examples > 0:
@@ -173,6 +184,7 @@ def main(argv: list[str]) -> int:
             "samples_success": int(success),
             "samples_failure": int(failure),
             "success_rate": float(rate),
+            "acc": float(rate),
             "matched_files": int(len(samples)),
             "ignored_files": int(len(ignored)),
             "mixed_keys": sorted([k for k, v in by_key.items() if len({s.success for s in v}) > 1]),
