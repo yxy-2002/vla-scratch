@@ -8,13 +8,13 @@ Hydra usage mirrors train_policy: pass data=... and policy=... groups.
 
 Examples:
   uv run python scripts/compute_norm_stats.py data=libero-spatial policy=pi-qwen \
-      data.action_horizon=30 data.state_history=1 \
+      policy.action_horizon=30 policy.state_history=1 \
       num_samples=4096 batch_size=64 num_workers=8
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast, TYPE_CHECKING
+from typing import Any, Optional, cast, TYPE_CHECKING
 import shutil
 import tempfile
 from tqdm import tqdm
@@ -118,7 +118,11 @@ def compute_and_save_norm_stats(
     state_tensor = stacked.observation.state
     action_tensor = stacked.action_chunk.actions
 
-    def _compute_norm_stats_for_tensor(tensor: torch.Tensor) -> FieldNormStats:
+    def _compute_norm_stats_for_tensor(
+        tensor: torch.Tensor,
+    ) -> Optional[FieldNormStats]:
+        if tensor.numel() == 0:
+            return None
         mean = tensor.mean(dim=0)
         std = tensor.std(dim=0, unbiased=False)
         q01 = torch.quantile(tensor, 0.01, dim=0)
@@ -127,10 +131,31 @@ def compute_and_save_norm_stats(
             mean_=mean, std_=std, q01=q01, q99=q99, batch_size=tensor.shape[1:]
         )
 
-    stats = {
-        PROCESSED_STATE_KEY: _compute_norm_stats_for_tensor(state_tensor),
-        PROCESSED_ACTION_KEY: _compute_norm_stats_for_tensor(action_tensor),
-    }
+    stats: NormStats = {}
+    state_stats = _compute_norm_stats_for_tensor(state_tensor)
+    if state_stats is None:
+        print(
+            f"Skipping '{PROCESSED_STATE_KEY}' norm stats because tensor is empty "
+            f"(shape={tuple(state_tensor.shape)})."
+        )
+    else:
+        stats[PROCESSED_STATE_KEY] = state_stats
+
+    action_stats = _compute_norm_stats_for_tensor(action_tensor)
+    if action_stats is None:
+        print(
+            f"Skipping '{PROCESSED_ACTION_KEY}' norm stats because tensor is empty "
+            f"(shape={tuple(action_tensor.shape)})."
+        )
+    else:
+        stats[PROCESSED_ACTION_KEY] = action_stats
+
+    if not stats:
+        raise ValueError(
+            "No valid tensors found to compute normalization stats. "
+            f"state shape={tuple(state_tensor.shape)}, "
+            f"action shape={tuple(action_tensor.shape)}"
+        )
 
     stats_path = save_norm_stats(output_dir, data_config, policy_config, stats)
     print(f"Saved normalization stats to: {stats_path}")
