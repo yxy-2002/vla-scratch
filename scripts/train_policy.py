@@ -176,6 +176,12 @@ def main(cfg: DictConfig) -> None:
         # print world size, mesh info
         print(f" World size: {world_size}")
         print(f"Device mesh: {mesh}")
+        print(
+            "[Debug][Config] effective policy "
+            f"state_history={train_cfg.policy.state_history}, "
+            f"action_horizon={train_cfg.policy.action_horizon}, "
+            f"use_paligemma_tokens={train_cfg.use_paligemma_tokens}"
+        )
 
     train_loaders, eval_loaders = create_dataloaders(
         train_cfg,

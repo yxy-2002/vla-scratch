@@ -105,6 +105,8 @@ def load_norm_stats(
             "norm_stats_path must be set to load normalization stats."
         )
     stats_dir = _resolve_norm_stats_dir(str(stats_path_str))
+    expected = None
+    used_fallback_single_candidate = False
     if stats_dir.is_file():
         stats_path = stats_dir
     else:
@@ -115,10 +117,27 @@ def load_norm_stats(
             candidates = sorted(stats_dir.glob("*.npz"))
             if len(candidates) == 1:
                 stats_path = candidates[0]
+                used_fallback_single_candidate = True
             else:
                 raise FileNotFoundError(
                     f"Could not resolve norm stats in {stats_dir}; expected {expected.name}"
                 )
+    dataset_target = str(getattr(data_cfg, "_target_", "unknown"))
+    print(
+        "[Debug][NormStats] "
+        f"dataset={dataset_target}, "
+        f"policy_state_history={policy_cfg.state_history}, "
+        f"policy_action_horizon={policy_cfg.action_horizon}, "
+        f"resolved_source={stats_path_str}, "
+        f"resolved_dir={stats_dir}, "
+        f"expected_file={(expected.name if expected is not None else stats_path.name)}, "
+        f"selected_file={stats_path}"
+    )
+    if used_fallback_single_candidate:
+        print(
+            "[Debug][NormStats] expected file was not found; "
+            "using the only .npz candidate in directory."
+        )
 
     loaded = np.load(stats_path, allow_pickle=True)
     try:
