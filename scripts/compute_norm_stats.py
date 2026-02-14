@@ -7,8 +7,8 @@ Compute and save normalization statistics for any configured dataset/policy.
 Hydra usage mirrors train_policy: pass data=... and policy=... groups.
 
 Examples:
-  uv run python scripts/compute_norm_stats.py data=libero-spatial policy=pi-qwen \
-      policy.action_horizon=30 policy.state_history=1 \
+  uv run python scripts/compute_norm_stats.py data=libero-mix-120-cotrain policy=pi-paligemma \
+      policy.action_horizon=60 policy.state_history=10 \
       num_samples=4096 batch_size=64 num_workers=8
 """
 

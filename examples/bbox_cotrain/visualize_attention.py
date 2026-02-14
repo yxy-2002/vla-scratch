@@ -11,23 +11,22 @@ This script:
 6. Saves visualization as an image with instruction text overlaid
 
 Usage:
-    python scripts/visualize_attention.py \
+    python examples/bbox_cotrain/visualize_attention.py \
         policy=pi-qwen \
         policy.state_history=0 \
         policy.action_horizon=10 \
         policy.transforms.0.max_length=500 \
-        data=bbox_cotrain_train \
-        checkpoint_path=/path/to/checkpoint_dir_or_file \
-        dataset_root=/path/to/lerobot_dataset_root \
-        output_dir=attention_visualizations \
+        data=bbox_cotrain_test \
+        checkpoint_path=/mnt/project_rlinf/yangxinye/vla-scratch/official-outputs/2026-02-09/23-59-25-state-0-action-10_norm_stats_bbox_mix-action_a-bbox_none/checkpoint_120 \
+        output_dir=attention_visualizations_qwen_bbox_none \
         layer_idx=-1 \
-        max_episodes=100
+        max_episodes=5
 """
 
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Tuple, cast
+from typing import Any, Optional, Tuple, Union, cast
 
 import einops
 import numpy as np
@@ -47,6 +46,9 @@ from vla_scratch.utils.checkpoint import (
 )
 from vla_scratch.transforms.data_types import Observation, DataSample
 from vla_scratch.transforms.common import ToTorch
+from vla_scratch.policies.modules.vlm_bridge.paligemma.bridge import (
+    PaligemmaBridge,
+)
 from vla_scratch.policies.modules.vlm_bridge.qwen.bridge import Qwen3VLBridge
 from vla_scratch.helpers.data import build_input_transforms, create_dataset
 from vla_scratch.transforms.data_keys import (
@@ -97,7 +99,7 @@ def compute_attention_weights(
 
 @torch.inference_mode()
 def extract_attention_from_bridge(
-    bridge: Qwen3VLBridge,
+    bridge: Union[Qwen3VLBridge, PaligemmaBridge],
     observation: Observation,
     layer_idx: int = -1,  # Last layer by default
     subtext: Optional[str] = None,
@@ -110,129 +112,177 @@ def extract_attention_from_bridge(
         image_mask: [batch, seq_len] - boolean mask indicating image token positions
         text_mask: [batch, seq_len] - boolean mask indicating text token positions
     """
+    from vla_scratch.policies.modules.vlm_bridge.paligemma.processor import (
+        PaligemmaPolicyInput,
+    )
     from vla_scratch.policies.modules.vlm_bridge.qwen.processor import (
         QwenPolicyInput,
     )
     from vla_scratch.policies.modules.vlm_bridge.qwen.utils import (
         is_qwen3vl_forward_replaced,
-        apply_rotary_pos_emb,
     )
+    from vla_scratch.policies.utils.transformers import apply_rotary_pos_emb
     from vla_scratch.policies.utils.transformers import make_att_2d_masks
 
-    assert isinstance(observation.policy_input, QwenPolicyInput)
-    policy_td: QwenPolicyInput = observation.policy_input
+    if isinstance(bridge, Qwen3VLBridge):
+        assert isinstance(observation.policy_input, QwenPolicyInput)
+        policy_td: QwenPolicyInput = observation.policy_input
 
-    REPLACED = is_qwen3vl_forward_replaced()
+        REPLACED = is_qwen3vl_forward_replaced()
 
-    # Now observation should have proper batch dimension from unsqueeze(0)
-    # So input_ids and attention_mask should already be [batch, seq_len]
-    input_ids = policy_td.input_ids
-    attention_mask = policy_td.attention_mask
-    # import pdb; pdb.set_trace()
-    # Embed text and images (same as bridge.encode)
-    lm = bridge.causal_model.language_model
-    inputs_embeds = lm.embed_tokens(input_ids)  # [batch, seq_len, hidden]
+        # Now observation should have proper batch dimension from unsqueeze(0)
+        # So input_ids and attention_mask should already be [batch, seq_len]
+        input_ids = policy_td.input_ids
+        attention_mask = policy_td.attention_mask
+        # Embed text and images (same as bridge.encode)
+        lm = bridge.causal_model.language_model
+        inputs_embeds = lm.embed_tokens(input_ids)  # [batch, seq_len, hidden]
 
-    # Handle pixel_values shape
-    # After unsqueeze(0), pixel_values should be [batch, grid, patch] or [batch, (grid), patch]
-    pixel_values = policy_td.pixel_values
-    if pixel_values.ndim == 2:
-        # Already in shape [(b grid), patch], no need to rearrange
-        pass
-    elif pixel_values.ndim == 3:
-        # Shape is [batch, grid, patch] or [batch, (grid), patch]
-        # Rearrange to [(b grid), patch] for vision model
-        pixel_values = einops.rearrange(
-            pixel_values, "b grid patch -> (b grid) patch"
-        )
-    else:
-        raise ValueError(f"Unexpected pixel_values shape: {pixel_values.shape}")
-    if REPLACED:
-        grid_thw_list = policy_td.image_grid_thw_list
-        grid_thw_list = sum(grid_thw_list, [])
-        image_embeds, deepstack_image_embeds = bridge.causal_model.model.visual(
-            pixel_values, grid_thw_list
-        )
-    else:
-        grid_thw_tensor = policy_td.image_grid_thw.reshape(-1, 3)
-        image_embeds, deepstack_image_embeds = bridge.causal_model.model.visual(
-            pixel_values, grid_thw_tensor
-        )
-
-    image_mask = (
-        input_ids == bridge.causal_model.model.config.image_token_id
-    )  # [batch, seq_len]
-
-    inputs_embeds.masked_scatter_(image_mask.unsqueeze(-1), image_embeds)
-
-    input_pad_mask = attention_mask  # [batch, seq_len]
-
-    # Handle position_ids shape
-    # After unsqueeze(0), position_ids should be [batch, plane, 1, seq_len]
-    # bridge.encode expects [plane, batch, seq_len]
-    position_ids_tensor = policy_td.position_ids
-    if position_ids_tensor.ndim == 4:
-        # Shape is [batch, plane, 1, seq_len] - rearrange to [plane, batch, seq_len]
-        if position_ids_tensor.shape[2] == 1:
-            position_ids = einops.rearrange(
-                position_ids_tensor, "b plane 1 s -> plane b s"
-            )
-        else:
-            position_ids = einops.rearrange(
-                position_ids_tensor, "b plane d s -> plane b s"
-            )
-    elif position_ids_tensor.ndim == 3:
-        # Check if it's [plane, batch, seq_len] or [batch, plane, seq_len]
-        if position_ids_tensor.shape[0] == 3:
-            # Shape is [plane, batch, seq_len], already correct
-            position_ids = position_ids_tensor
-        elif position_ids_tensor.shape[1] == 3:
-            # Shape is [batch, plane, seq_len], need to rearrange
-            position_ids = einops.rearrange(
-                position_ids_tensor, "b plane s -> plane b s"
+        # Handle pixel_values shape
+        # After unsqueeze(0), pixel_values should be [batch, grid, patch] or [batch, (grid), patch]
+        pixel_values = policy_td.pixel_values
+        if pixel_values.ndim == 2:
+            # Already in shape [(b grid), patch], no need to rearrange
+            pass
+        elif pixel_values.ndim == 3:
+            # Shape is [batch, grid, patch] or [batch, (grid), patch]
+            # Rearrange to [(b grid), patch] for vision model
+            pixel_values = einops.rearrange(
+                pixel_values, "b grid patch -> (b grid) patch"
             )
         else:
             raise ValueError(
-                f"Cannot infer position_ids shape: {position_ids_tensor.shape}"
+                f"Unexpected pixel_values shape: {pixel_values.shape}"
             )
-    else:
-        raise ValueError(
-            f"Unexpected position_ids shape: {position_ids_tensor.shape}, expected 3D or 4D"
+        if REPLACED:
+            grid_thw_list = policy_td.image_grid_thw_list
+            grid_thw_list = sum(grid_thw_list, [])
+            image_embeds, _ = bridge.causal_model.model.visual(
+                pixel_values, grid_thw_list
+            )
+        else:
+            grid_thw_tensor = policy_td.image_grid_thw.reshape(-1, 3)
+            image_embeds, _ = bridge.causal_model.model.visual(
+                pixel_values, grid_thw_tensor
+            )
+
+        image_mask = (
+            input_ids == bridge.causal_model.model.config.image_token_id
+        )  # [batch, seq_len]
+
+        inputs_embeds.masked_scatter_(image_mask.unsqueeze(-1), image_embeds)
+
+        input_pad_mask = attention_mask  # [batch, seq_len]
+
+        # Handle position_ids shape
+        # After unsqueeze(0), position_ids should be [batch, plane, 1, seq_len]
+        # bridge.encode expects [plane, batch, seq_len]
+        position_ids_tensor = policy_td.position_ids
+        if position_ids_tensor.ndim == 4:
+            # Shape is [batch, plane, 1, seq_len] - rearrange to [plane, batch, seq_len]
+            if position_ids_tensor.shape[2] == 1:
+                position_ids = einops.rearrange(
+                    position_ids_tensor, "b plane 1 s -> plane b s"
+                )
+            else:
+                position_ids = einops.rearrange(
+                    position_ids_tensor, "b plane d s -> plane b s"
+                )
+        elif position_ids_tensor.ndim == 3:
+            # Check if it's [plane, batch, seq_len] or [batch, plane, seq_len]
+            if position_ids_tensor.shape[0] == 3:
+                # Shape is [plane, batch, seq_len], already correct
+                position_ids = position_ids_tensor
+            elif position_ids_tensor.shape[1] == 3:
+                # Shape is [batch, plane, seq_len], need to rearrange
+                position_ids = einops.rearrange(
+                    position_ids_tensor, "b plane s -> plane b s"
+                )
+            else:
+                raise ValueError(
+                    f"Cannot infer position_ids shape: {position_ids_tensor.shape}"
+                )
+        else:
+            raise ValueError(
+                f"Unexpected position_ids shape: {position_ids_tensor.shape}, expected 3D or 4D"
+            )
+
+        embs = inputs_embeds
+        pad_masks = input_pad_mask
+
+        prefix_att_2d = make_att_2d_masks(pad_masks, pad_masks)
+        prefix_att_mask = einops.rearrange(prefix_att_2d, "b i j -> b 1 i j")
+
+        position_emb = lm.rotary_emb.forward(embs, position_ids)
+        hidden_states = embs
+        bridge_kind = "qwen"
+    elif isinstance(bridge, PaligemmaBridge):
+        assert isinstance(observation.policy_input, PaligemmaPolicyInput)
+        policy_td: PaligemmaPolicyInput = observation.policy_input
+
+        input_ids = policy_td.input_ids
+        input_pad_mask = policy_td.attention_mask
+        lm = bridge.causal_model.model.language_model
+
+        image_token_id = bridge.causal_model.config.image_token_id
+        if image_token_id >= bridge.causal_model.model.vocab_size:
+            special_image_mask = input_ids == image_token_id
+            llm_input_ids = input_ids.clone()
+            llm_input_ids[special_image_mask] = 0
+        else:
+            llm_input_ids = input_ids
+
+        inputs_embeds = lm.embed_tokens(llm_input_ids)
+        images_flat = einops.rearrange(
+            policy_td.pixel_values, "b n c h w -> (b n) c h w"
+        )
+        image_embeds = bridge.causal_model.model.get_image_features(images_flat)
+        image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+
+        image_mask = input_ids == image_token_id
+        special_image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds)
+        inputs_embeds = inputs_embeds.masked_scatter(
+            special_image_mask, image_embeds
         )
 
-    embs = inputs_embeds
-    pad_masks = input_pad_mask
-
-    prefix_att_2d = make_att_2d_masks(pad_masks, pad_masks)
-    prefix_att_mask = einops.rearrange(prefix_att_2d, "b i j -> b 1 i j")
-
-    position_emb = lm.rotary_emb.forward(embs, position_ids)
-    # import pdb; pdb.set_trace()
-    hidden_states = embs
+        prefix_att_2d = make_att_2d_masks(input_pad_mask, input_pad_mask)
+        prefix_att_mask = einops.rearrange(prefix_att_2d, "b i j -> b 1 i j")
+        position_ids = torch.cumsum(input_pad_mask, dim=1)
+        position_emb = lm.rotary_emb.forward(inputs_embeds, position_ids)
+        hidden_states = inputs_embeds * (inputs_embeds.shape[-1] ** 0.5)
+        bridge_kind = "paligemma"
+    else:
+        raise TypeError(f"Unsupported bridge type: {type(bridge)}")
 
     # Process through layers until target layer
     target_layer_idx = (
         layer_idx if layer_idx >= 0 else len(lm.layers) + layer_idx
     )
+    if target_layer_idx < 0 or target_layer_idx >= len(lm.layers):
+        raise ValueError(
+            f"layer_idx={layer_idx} resolves to {target_layer_idx}, "
+            f"but model has {len(lm.layers)} layers"
+        )
     attn_weights = None
 
     for idx, decoder_layer in enumerate(lm.layers):
         if idx == target_layer_idx:
             # Manually compute attention weights for this layer
             self_attn = decoder_layer.self_attn
-            residual = hidden_states
             hidden_states_norm = decoder_layer.input_layernorm(hidden_states)
 
             input_shape = hidden_states_norm.shape[:-1]
             hidden_shape = (*input_shape, -1, self_attn.head_dim)
 
-            # Projections with QK norm
-            q = self_attn.q_norm(
-                self_attn.q_proj(hidden_states_norm).view(hidden_shape)
-            )
-            k = self_attn.k_norm(
-                self_attn.k_proj(hidden_states_norm).view(hidden_shape)
-            )
+            # Qwen has q_norm/k_norm, Gemma does not.
+            q_proj = self_attn.q_proj(hidden_states_norm).view(hidden_shape)
+            k_proj = self_attn.k_proj(hidden_states_norm).view(hidden_shape)
+            if hasattr(self_attn, "q_norm") and hasattr(self_attn, "k_norm"):
+                q = self_attn.q_norm(q_proj)
+                k = self_attn.k_norm(k_proj)
+            else:
+                q = q_proj
+                k = k_proj
             v = self_attn.v_proj(hidden_states_norm).view(hidden_shape)
             q = einops.rearrange(q, "b seq head dim -> b head seq dim")
             k = einops.rearrange(k, "b seq head dim -> b head seq dim")
@@ -270,35 +320,29 @@ def extract_attention_from_bridge(
                 attention_mask=prefix_att_mask,
                 scale=self_attn.scaling,
             )
-
-            # Compute attention output
-            attn_out = torch.matmul(attn_weights, v)
-            attn_out = einops.rearrange(
-                attn_out, "b head seq dim -> b seq (head dim)"
-            ).contiguous()
-            attn_out = self_attn.o_proj(attn_out)
-            hidden_states = residual + attn_out
-
-            # Continue with MLP
-            residual = hidden_states
-            hidden_states = decoder_layer.post_attention_layernorm(
-                hidden_states
-            )
-            hidden_states = decoder_layer.mlp(hidden_states)
-            hidden_states = residual + hidden_states
             break
         else:
             # Normal forward
-            outputs = decoder_layer(
-                hidden_states,
-                attention_mask=prefix_att_mask,
-                position_embeddings=position_emb,
-                past_key_values=None,
-            )
+            if bridge_kind == "qwen":
+                outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=prefix_att_mask,
+                    position_embeddings=position_emb,
+                    past_key_values=None,
+                )
+            else:
+                outputs = decoder_layer(
+                    hidden_states,
+                    prefix_att_mask,
+                    position_emb,
+                )
             if isinstance(outputs, tuple):
                 hidden_states = outputs[0]
             else:
                 hidden_states = outputs
+
+    if attn_weights is None:
+        raise RuntimeError("Failed to extract attention weights")
 
     # Create text mask (opposite of image mask, but only for valid tokens)
     text_mask = ~image_mask & input_pad_mask.bool()  # [batch, seq_len]
@@ -918,8 +962,10 @@ def main(cfg: DictConfig) -> None:
         raise ValueError("Model does not have vlm_bridge attribute")
 
     bridge = model.vlm_bridge
-    if not isinstance(bridge, Qwen3VLBridge):
-        raise ValueError(f"Expected Qwen3VLBridge, got {type(bridge)}")
+    if not isinstance(bridge, (Qwen3VLBridge, PaligemmaBridge)):
+        raise ValueError(
+            f"Expected Qwen3VLBridge or PaligemmaBridge, got {type(bridge)}"
+        )
 
     # Build input transforms to get the processor
     input_transforms = [ToTorch()] + build_input_transforms(
@@ -986,13 +1032,25 @@ def main(cfg: DictConfig) -> None:
             # Use object name as the input for the model
             model_input_instruction = instruction
 
-            img_chw = (img_tensor * 255).type(torch.uint8).cpu().numpy()
+            img_np = (img_tensor * 255).type(torch.uint8).cpu().numpy()
+            if img_np.ndim == 3:
+                # Single image CHW -> make it NCHW for processors.
+                processed_images = img_np[None, ...]
+                img_chw = img_np
+            elif img_np.ndim == 4:
+                # Already NCHW; visualize first image.
+                processed_images = img_np
+                img_chw = img_np[0]
+            else:
+                raise ValueError(f"Unexpected image tensor shape: {img_np.shape}")
             original_shape = img_chw.shape[1:]  # (H, W)
 
             # Create payload dict (same format as build_payload and serve_policy input)
             payload = {
-                PROCESSED_IMAGE_KEY: img_chw,  # (3, H, W) - will be processed by transforms
-                PROCESSED_IMAGE_MASK_KEY: np.ones((1,), dtype=bool),
+                PROCESSED_IMAGE_KEY: processed_images,  # (N, 3, H, W)
+                PROCESSED_IMAGE_MASK_KEY: np.ones(
+                    (processed_images.shape[0],), dtype=bool
+                ),
                 PROCESSED_STATE_KEY: np.zeros(
                     (args.policy.state_history + 1, args.policy.state_dim or 1),
                     dtype=np.float32,
@@ -1019,12 +1077,41 @@ def main(cfg: DictConfig) -> None:
 
             # Get image grid info
             policy_input = data_sample.observation.policy_input
-            image_grid_thw = policy_input.image_grid_thw
-
-            # Get spatial merge size from vision model
-            spatial_merge_size = getattr(
-                bridge.processor.image_processor, "merge_size", 14
-            )
+            if hasattr(policy_input, "image_grid_thw"):
+                image_grid_thw = policy_input.image_grid_thw
+                # Get spatial merge size from vision model
+                spatial_merge_size = getattr(
+                    bridge.processor.image_processor, "merge_size", 14
+                )
+            else:
+                # PaliGemma path: derive token grid from image size + vision patch size.
+                pixel_values = policy_input.pixel_values
+                if pixel_values.ndim != 5:
+                    raise ValueError(
+                        f"Unexpected pixel_values shape for paligemma: {pixel_values.shape}"
+                    )
+                num_images = int(pixel_values.shape[1])
+                image_h = int(pixel_values.shape[-2])
+                image_w = int(pixel_values.shape[-1])
+                patch_size = int(
+                    getattr(
+                        bridge.causal_model.config.vision_config,
+                        "patch_size",
+                        14,
+                    )
+                )
+                if image_h % patch_size != 0 or image_w % patch_size != 0:
+                    raise ValueError(
+                        f"Image shape {(image_h, image_w)} is not divisible by patch_size={patch_size}"
+                    )
+                grid_h = image_h // patch_size
+                grid_w = image_w // patch_size
+                image_grid_thw = torch.tensor(
+                    [[1, grid_h, grid_w]],
+                    device=pixel_values.device,
+                    dtype=torch.long,
+                ).repeat(num_images, 1)
+                spatial_merge_size = 1
 
             # Map attention to image space
             attention_map = map_attention_to_image(

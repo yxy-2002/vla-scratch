@@ -87,7 +87,7 @@ pi_qwen_config = PiConfig(
     _target_="vla_scratch.policies.pi.policy.PiPolicy",
     state_history=1,
     action_horizon=10,
-    model_id="Qwen/Qwen3-VL-2B-Instruct",
+    model_id="/mnt/project_rlinf/yangxinye/vla-scratch/pretrained_models/Qwen3-VL-2B-Instruct",
     vlm_type="Qwen3VLForConditionalGeneration",
     transforms=[
         {

@@ -8,6 +8,7 @@ pretrained_models
 data
 norm_stats
 libero_er
+attention_visualizations_*
 
 *.egg-info
 __pycache__

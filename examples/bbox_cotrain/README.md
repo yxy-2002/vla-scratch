@@ -3,7 +3,7 @@
 ## 🚀 Policy Serving
 ```bash
 uv run scripts/serve_policy.py \
-    checkpoint_path=outputs/2026-02-06/00-01-37-vla-scratch-training/checkpoint_80 \
+    checkpoint_path=/mnt/project_rlinf/yangxinye/vla-scratch/official-outputs/2026-02-09/23-59-25-state-0-action-10_norm_stats_bbox_mix-action_a-bbox_none/checkpoint_120 \
     data=bbox_cotrain_test \
     merge_policy_cfg=true
 ```
@@ -34,5 +34,5 @@ Run the simulation with policy client:
 ```bash
 source examples/bbox_cotrain/.venv/bin/activate
 python examples/bbox_cotrain/simulation.py \
-    render=true sim_backend=cpu port=8000 obj_set=train
+    render=false sim_backend=cpu port=9000 obj_set=test video_path=outputs/evaluation/0212_maniskill_attention/action-a-bbox-ab/test/
 ```

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from contextlib import nullcontext
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Sequence, cast, TYPE_CHECKING
@@ -65,6 +66,30 @@ class ServeConfig:
 
 cs = ConfigStore.instance()
 cs.store(name="serve", node=ServeConfig())
+
+
+def _collect_cli_policy_dotlist(argv: Sequence[str]) -> list[str]:
+    """Collect policy field overrides from CLI and normalize Hydra '+' prefixes."""
+    dotlist: list[str] = []
+    for arg in argv:
+        if "=" not in arg:
+            continue
+        key, value = arg.split("=", 1)
+        normalized_key = key.lstrip("+")
+        if not normalized_key.startswith("policy."):
+            continue
+        dotlist.append(f"{normalized_key}={value}")
+    return dotlist
+
+
+def _reapply_policy_overrides(cfg: DictConfig, dotlist: Sequence[str]) -> DictConfig:
+    """Reapply policy field overrides after checkpoint policy merge."""
+    for entry in dotlist:
+        key, _ = entry.split("=", 1)
+        parsed = OmegaConf.from_dotlist([entry])
+        value = OmegaConf.select(parsed, key)
+        OmegaConf.update(cfg, key, value, force_add=True)
+    return cfg
 
 
 def _initialize_policy_dims(
@@ -171,12 +196,16 @@ class ServePolicy:
 def main(cfg: DictConfig) -> None:
     OmegaConf.resolve(cfg)
     OmegaConf.set_struct(cfg, False)
+    cli_policy_dotlist = _collect_cli_policy_dotlist(sys.argv[1:])
     art.tprint("VLA-SCRATCH", font="big")
     setproctitle("vla-serve")
     if (checkpoint_path := cfg.get("checkpoint_path")) is not None:
         cfg.checkpoint_path = find_latest_checkpoint(checkpoint_path)
     if cfg.get("merge_policy_cfg", False):
         cfg = merge_policy_cfg_from_checkpoint(cfg, cfg.get("checkpoint_path"))
+        if cli_policy_dotlist:
+            # Keep user-provided policy field overrides after checkpoint merge.
+            cfg = _reapply_policy_overrides(cfg, cli_policy_dotlist)
         OmegaConf.resolve(cfg)
 
     serve_cfg = cast(ServeConfig, OmegaConf.to_object(cfg))

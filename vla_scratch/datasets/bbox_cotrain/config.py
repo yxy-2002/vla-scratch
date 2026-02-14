@@ -19,18 +19,18 @@ class CoTrainConfig(DataConfig):
     # Regex filters applied to info.json splits keys (e.g., \".*banana.*\")
     splits: List[str] = field(default_factory=lambda: [".*"])
 
-    norm_stats_path: str = "/mnt/project_rlinf/yangxinye/vla-scratch/norm_stats/norm_stats-bbox-cotrain-train"
+    norm_stats_path: str = "hf:elijahgalahad/norm_stats-bbox-cotrain"
 
 
 train_cotrain_config = CoTrainConfig(
     root_path="/mnt/project_rlinf/yangxinye/vla-scratch/data/",
     repo_id="lerobot_merged_restricted",
-    norm_stats_path="/mnt/project_rlinf/yangxinye/vla-scratch/norm_stats/norm_stats-bbox-cotrain-train"
+    # norm_stats_path="/mnt/project_rlinf/yangxinye/vla-scratch/norm_stats/norm_stats-bbox-cotrain-train"
 )
 test_cotrain_config = CoTrainConfig(
     root_path="/mnt/project_rlinf/yangxinye/vla-scratch/data/",
     repo_id="lerobot_merged_restricted_val",
-    norm_stats_path="/mnt/project_rlinf/yangxinye/vla-scratch/norm_stats/norm_stats-bbox-cotrain-eval"
+    # norm_stats_path="/mnt/project_rlinf/yangxinye/vla-scratch/norm_stats/norm_stats-bbox-cotrain-eval"
 )
 
 cs = ConfigStore.instance()
